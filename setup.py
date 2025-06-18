@@ -36,14 +36,12 @@ PLAT_TO_CMAKE = {
 
 
 class CMakeExtension(Extension):
-
     def __init__(self, name: str, sourcedir: str = "") -> None:
         super().__init__(name, sources=[])
         self.sourcedir = os.fspath(Path(sourcedir).resolve())
 
 
 class CMakeBuild(build_ext):
-
     def build_extension(self, ext: CMakeExtension) -> None:
         # Must be in this form due to bug in .resolve() only fixed in Python 3.10+
         ext_fullpath = Path.cwd() / self.get_ext_fullpath(ext.name)
@@ -52,8 +50,7 @@ class CMakeBuild(build_ext):
         # Using this requires trailing slash for auto-detection & inclusion of
         # auxiliary "native" libs
 
-        debug = int(os.environ.get("DEBUG",
-                                   0)) if self.debug is None else self.debug
+        debug = int(os.environ.get("DEBUG", 0)) if self.debug is None else self.debug
         cfg = "Debug" if debug else "Release"
 
         # CMake lets you override the generator - we need to check this.
@@ -73,14 +70,10 @@ class CMakeBuild(build_ext):
         # Adding CMake arguments set as environment variable
         # (needed e.g. to build for ARM OSx on conda-forge)
         if "CMAKE_ARGS" in os.environ:
-            cmake_args += [
-                item for item in os.environ["CMAKE_ARGS"].split(" ") if item
-            ]
+            cmake_args += [item for item in os.environ["CMAKE_ARGS"].split(" ") if item]
 
         # In this example, we pass in the version to C++. You might not need to.
-        cmake_args += [
-            f"-DEXAMPLE_VERSION_INFO={self.distribution.get_version()}"
-        ]
+        cmake_args += [f"-DEXAMPLE_VERSION_INFO={self.distribution.get_version()}"]
 
         if self.compiler.compiler_type != "msvc":
             # Using Ninja-build since it a) is available as a wheel and b)
@@ -102,8 +95,7 @@ class CMakeBuild(build_ext):
 
         else:
             # Single config generators are handled "normally"
-            single_config = any(x in cmake_generator
-                                for x in {"NMake", "Ninja"})
+            single_config = any(x in cmake_generator for x in {"NMake", "Ninja"})
 
             # CMake allows an arch-in-generator style for backward compatibility
             contains_arch = any(x in cmake_generator for x in {"ARM", "Win64"})
@@ -125,9 +117,7 @@ class CMakeBuild(build_ext):
             # Cross-compile support for macOS - respect ARCHFLAGS if set
             archs = re.findall(r"-arch (\S+)", os.environ.get("ARCHFLAGS", ""))
             if archs:
-                cmake_args += [
-                    "-DCMAKE_OSX_ARCHITECTURES={}".format(";".join(archs))
-                ]
+                cmake_args += ["-DCMAKE_OSX_ARCHITECTURES={}".format(";".join(archs))]
 
         # Set CMAKE_BUILD_PARALLEL_LEVEL to control the parallel build level
         # across all generators.
@@ -142,12 +132,12 @@ class CMakeBuild(build_ext):
         if not build_temp.exists():
             build_temp.mkdir(parents=True)
 
-        subprocess.run(["cmake", ext.sourcedir, *cmake_args],
-                       cwd=build_temp,
-                       check=True)
-        subprocess.run(["cmake", "--build", ".", *build_args],
-                       cwd=build_temp,
-                       check=True)
+        subprocess.run(
+            ["cmake", ext.sourcedir, *cmake_args], cwd=build_temp, check=True
+        )
+        subprocess.run(
+            ["cmake", "--build", ".", *build_args], cwd=build_temp, check=True
+        )
 
 
 class CompileGrpc(_build_py):
@@ -156,18 +146,52 @@ class CompileGrpc(_build_py):
     def run(self):
         import os
         import sys
+
         sys.path.append(os.path.dirname(os.path.abspath(__file__)))
         from arctic_inference.embedding.generate_proto import generate_grpc_code
+
         generate_grpc_code()
         # Run the original build_py command
         _build_py.run(self)
 
+
+# ---------------------------------------------------------------------------
+# Decide whether to build the CUDA-dependent custom_ops extension.
+#
+# We build it only when a CUDA compiler (nvcc) is present *and* the user has
+# not explicitly disabled it via the `ARCTIC_SKIP_CUDA` environment variable.
+# Users without a GPU/CUDA toolkit can still install Arctic Inference because
+# `arctic_inference.py_custom_ops` falls back to a pure-Python implementation
+# when the shared library is absent.
+# ---------------------------------------------------------------------------
+
+has_nvcc = shutil.which("nvcc") is not None
+force_cuda = os.environ.get("ARCTIC_FORCE_CUDA", "0") == "1"
+skip_cuda = os.environ.get("ARCTIC_SKIP_CUDA", "0") == "1"
+
+if force_cuda and skip_cuda:
+    raise RuntimeError(
+        "Both ARCTIC_FORCE_CUDA and ARCTIC_SKIP_CUDA are set – choose one."
+    )
+
+should_build_cuda = (has_nvcc or force_cuda) and not skip_cuda
+
+ext_modules = [
+    CMakeExtension(
+        "arctic_inference.common.suffix_cache._C",
+        "csrc/suffix_cache",
+    )
+]
+
+if should_build_cuda:
+    ext_modules.append(CMakeExtension("arctic_inference.custom_ops", "csrc/custom_ops"))
+else:
+    print(
+        "[ArcticInference setup] CUDA toolkit not detected or disabled; "
+        "skipping build of arctic_inference.custom_ops.\n"  # noqa: E501
+    )
+
 setup(
-    ext_modules=[
-        CMakeExtension("arctic_inference.common.suffix_cache._C",
-                       "csrc/suffix_cache"),
-        CMakeExtension("arctic_inference.custom_ops",
-                       "csrc/custom_ops"),
-    ],
-    cmdclass={"build_ext": CMakeBuild, 'build_py': CompileGrpc},
+    ext_modules=ext_modules,
+    cmdclass={"build_ext": CMakeBuild, "build_py": CompileGrpc},
 )
